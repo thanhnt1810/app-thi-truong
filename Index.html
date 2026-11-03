@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>App thị trường</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  /* ====== DÁN LINK APPS SCRIPT Ở PHẦN <script> BÊN DƯỚI (API_URL) ====== */
+  :root{--brand:#1f4e79;--yellow:#ffc107;--line:#dde3ec;--muted:#6b7385;--ok:#1e8e4e;--ok-bg:#e6f5ec;--warn:#b26a00;--warn-bg:#fff4e0;--bad:#c0392b;--bad-bg:#fbeaea}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:#f4f6fa;color:#1d2433}
+  header{position:sticky;top:0;z-index:5;background:var(--brand);color:#fff;padding:10px 12px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .brand{font-weight:700;font-size:17px;padding-top:10px;white-space:nowrap}
+  .comp{display:flex;flex-direction:column;gap:6px;width:190px;max-width:55vw}
+  .comp select{background:var(--yellow);color:#1d2433;font-weight:700;border:0;border-radius:10px;padding:11px 12px;font-size:15px;margin:0;width:100%}
+  .comp select.invalid{outline:3px solid #ff6b6b}
+  .comp input{margin:0;border:2px solid var(--yellow)}
+  main{max-width:560px;margin:0 auto;padding:12px 12px 60px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  #reader{width:100%;background:#000;border-radius:10px;overflow:hidden;min-height:180px}
+  #reader video{object-fit:cover}
+  .scanline{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:#eef3fa;color:var(--brand)}
+  .scanline.ok{background:var(--ok-bg);color:var(--ok);font-weight:600}
+  .scanline.err{background:var(--bad-bg);color:var(--bad)}
+  label{display:block;font-size:14px;font-weight:600;margin-top:12px}
+  .req{color:var(--bad)}
+  input{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:8px;font-size:16px;margin:5px 0 0;background:#fff}
+  input.ro{background:#f1f4f8}
+  input.noinfo{color:var(--warn);font-weight:600}
+  input.need::placeholder{color:var(--warn);font-weight:600}
+  input.invalid{border:2px solid var(--bad)}
+  .row{display:flex;gap:8px}
+  .row input{flex:1}
+  .btn{border:0;border-radius:8px;padding:11px 16px;font-size:16px;cursor:pointer;background:#e9eef5;color:#1d2433;text-align:center;display:inline-block}
+  .btn.primary{background:var(--brand);color:#fff}
+  .btn.save{background:var(--brand);color:#fff;width:100%;margin-top:18px;padding:14px;font-size:17px}
+  .btn.small{padding:8px 12px;font-size:14px}
+  .btn:disabled{opacity:.5}
+  .status{margin-top:10px;padding:10px 12px;border-radius:8px;font-size:14px}
+  .status.ok{background:var(--ok-bg);color:var(--ok)}
+  .status.warn{background:var(--warn-bg);color:var(--warn)}
+  .status.err{background:var(--bad-bg);color:var(--bad)}
+  .photo{display:flex;gap:10px;align-items:center;margin-top:6px}
+  .photo img{width:96px;height:96px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#f1f4f8}
+  .muted{color:var(--muted);font-size:13px}
+  .hidden{display:none!important}
+  .item{padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
+  .item:last-child{border-bottom:0}
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ok);color:#fff;padding:12px 18px;border-radius:8px;z-index:20;max-width:90vw}
+  h3{margin:0 0 8px;font-size:16px}
+  .foot{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .foot a{color:var(--brand);font-size:13px;cursor:pointer;text-decoration:underline}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">🛒 App thị trường</div>
+  <div class="comp">
+    <select id="comp" onchange="onCompChange()">
+      <option value="">▼ Tên đối thủ</option>
+    </select>
+    <input id="compOther" class="hidden" placeholder="Gõ tên đối thủ" autocomplete="off">
+  </div>
+</header>
+
+<main>
+  <!-- Đăng nhập lần đầu -->
+  <div id="setupView" class="card hidden">
+    <h3>Bắt đầu</h3>
+    <label>Họ tên người nhập <span class="req">*</span></label>
+    <input id="inName" placeholder="Nguyễn Văn A" autocomplete="name">
+    <label>Mã PIN <span class="req">*</span></label>
+    <input id="inPin" inputmode="numeric" type="password" placeholder="Hỏi quản lý để lấy mã PIN">
+    <button class="btn save" id="btnSetup" onclick="doSetup()">Vào app</button>
+    <div id="setupMsg" class="status hidden"></div>
+  </div>
+
+  <div id="appView" class="hidden">
+    <!-- Camera quét liên tục -->
+    <div class="card">
+      <div id="reader"></div>
+      <div id="scanMsg" class="scanline">Đang mở camera…</div>
+      <div id="camFallback" class="hidden" style="margin-top:8px">
+        <label class="btn primary" style="display:block;margin:0">📸 Chụp ảnh mã vạch
+          <input type="file" accept="image/*" capture="environment" hidden onchange="scanPhotoFile(this)">
+        </label>
+        <div class="muted" style="margin-top:6px">Nếu camera không mở: hãy mở link bằng <b>Chrome</b> (Android) hoặc <b>Safari</b> (iPhone), không mở trong Zalo/Gapo, và cho phép dùng camera.</div>
+      </div>
+    </div>
+
+    <!-- Form -->
+    <div class="card">
+      <label>Barcode <span class="req">*</span></label>
+      <div class="row">
+        <input id="barcode" inputmode="numeric" placeholder="Đưa mã vào camera hoặc gõ tay" autocomplete="off">
+        <button class="btn small" onclick="lookupTyped()">Tra</button>
+      </div>
+      <div id="status" class="status hidden"></div>
+
+      <label>Mã hàng</label>
+      <input id="ma" readonly class="ro">
+
+      <label>Tên hàng <span class="req">*</span></label>
+      <input id="ten" autocomplete="off">
+
+      <label>Giá bán lẻ SB</label>
+      <input id="giaSB" readonly class="ro">
+
+      <label>Giá bán đối thủ <span class="req">*</span></label>
+      <input id="giaDT" inputmode="numeric" autocomplete="off" placeholder="Nhập giá đối thủ đang bán">
+
+      <label>Giá khuyến mãi đối thủ</label>
+      <input id="km" inputmode="numeric" autocomplete="off" placeholder="Không bắt buộc">
+
+      <label>Ảnh chụp</label>
+      <div class="photo">
+        <img id="photoImg" alt="">
+        <div>
+          <label class="btn small" style="margin:0">📷 Chụp lại ảnh
+            <input type="file" accept="image/*" capture="environment" hidden onchange="retakePhoto(this)">
+          </label>
+          <div class="muted" style="margin-top:6px">Ảnh tự chụp lúc quét mã. Có thể chụp lại sản phẩm / bảng giá.</div>
+        </div>
+      </div>
+
+      <button id="btnSave" class="btn save" onclick="save()">💾 Lưu</button>
+      <button class="btn" style="width:100%;margin-top:8px" onclick="skip()">↺ Bỏ qua, quét mã khác</button>
+    </div>
+
+    <div class="card">
+      <h3>Đã lưu gần đây</h3>
+      <div id="recent" class="muted">Chưa có.</div>
+    </div>
+
+    <div class="foot muted">
+      <span id="who"></span>
+      <span><span id="dmInfo"></span> · <a onclick="reloadCatalog()">Tải lại danh mục</a> · <a onclick="logout()">Đổi người</a></span>
+    </div>
+  </div>
+</main>
+
+<div id="readerFile" style="display:none"></div>
+<div id="toast" class="toast hidden"></div>
+
+<script>
+/* =========================================================
+   DÁN LINK WEB APP APPS SCRIPT (kết thúc bằng /exec) VÀO ĐÂY
+   ========================================================= */
+const API_URL = 'DAN_LINK_APPS_SCRIPT_VAO_DAY';
+
+const COMPETITORS = ['Winmart', 'BHX', 'Bác Tôm', 'Fuji', 'Aone'];
+const OTHER = '__other__';
+const NOINFO = 'Không có thông tin';
+
+const st = { profile: null, catalog: null, found: null, item: null, photo: '', busy: false, saving: false };
+let qr = null, camOk = false;
+
+/* ---------- tiện ích ---------- */
+const $ = id => document.getElementById(id);
+const num = s => Number(String(s || '').replace(/[^\d]/g, '')) || 0;
+const fmt = n => n ? Number(n).toLocaleString('vi-VN') : '';
+const clean = s => String(s || '').trim().replace(/\.0+$/, '');
+function lsGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+
+async function api(action, data, pin) {
+  const body = JSON.stringify(Object.assign({ action, pin: pin || (st.profile && st.profile.pin) }, data || {}));
+  const res = await fetch(API_URL, { method: 'POST', body });
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || 'Lỗi không xác định');
+  return j;
+}
+function scanMsg(t, type) { const m = $('scanMsg'); m.className = 'scanline ' + (type || ''); m.textContent = t; }
+function status(type, t) { const s = $('status'); s.className = 'status ' + type; s.textContent = t; }
+function toast(t) { const el = $('toast'); el.textContent = '✔ ' + t; el.classList.remove('hidden'); setTimeout(() => el.classList.add('hidden'), 2200); }
+function beep() {
+  try { navigator.vibrate && navigator.vibrate(120); } catch (e) {}
+  try {
+    const a = new (window.AudioContext || window.webkitAudioContext)();
+    const o = a.createOscillator(); o.frequency.value = 1200; o.connect(a.destination);
+    o.start(); setTimeout(() => { o.stop(); a.close(); }, 120);
+  } catch (e) {}
+}
+
+/* ---------- khởi động ---------- */
+function init() {
+  const sel = $('comp');
+  COMPETITORS.forEach(c => sel.add(new Option(c, c)));
+  sel.add(new Option('Đối thủ khác…', OTHER));
+  const saved = lsGet('att_comp');
+  if (saved) {
+    if (COMPETITORS.includes(saved)) sel.value = saved;
+    else { sel.value = OTHER; $('compOther').value = saved; }
+    onCompChange(true);
+  }
+  $('compOther').addEventListener('change', () => { const v = $('compOther').value.trim(); if (v) lsSet('att_comp', v); });
+
+  ['giaDT', 'km'].forEach(id => $(id).addEventListener('input', e => {
+    const v = num(e.target.value); e.target.value = v ? fmt(v) : '';
+  }));
+  document.querySelectorAll('input,select').forEach(el => el.addEventListener('input', () => el.classList.remove('invalid')));
+  $('barcode').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); lookupTyped(); } });
+
+  if (API_URL.indexOf('http') !== 0) {
+    $('setupView').classList.remove('hidden');
+    $('setupMsg').className = 'status err';
+    $('setupMsg').textContent = 'Chưa dán link Apps Script vào biến API_URL trong file index.html.';
+    $('btnSetup').disabled = true;
+    return;
+  }
+  st.profile = lsGet('att_profile');
+  if (st.profile && st.profile.name && st.profile.pin) startApp();
+  else $('setupView').classList.remove('hidden');
+}
+
+async function doSetup() {
+  const name = $('inName').value.trim(), pin = $('inPin').value.trim();
+  const msg = $('setupMsg');
+  if (!name || !pin) { msg.className = 'status err'; msg.textContent = 'Nhập đủ họ tên và mã PIN.'; return; }
+  $('btnSetup').disabled = true; msg.className = 'status'; msg.textContent = 'Đang kiểm tra…';
+  try {
+    await api('ping', {}, pin);
+    st.profile = { name, pin };
+    lsSet('att_profile', st.profile);
+    $('setupView').classList.add('hidden');
+    startApp();
+  } catch (e) {
+    msg.className = 'status err'; msg.textContent = 'Không vào được: ' + e.message;
+  } finally { $('btnSetup').disabled = false; }
+}
+function logout() { lsDel('att_profile'); location.reload(); }
+
+function startApp() {
+  $('appView').classList.remove('hidden');
+  $('who').textContent = '👤 ' + st.profile.name;
+  loadCatalog();
+  startCamera();
+}
+
+/* ---------- danh mục (tải 1 lần, tra tức thì) ---------- */
+function setCatalog(rows) {
+  const m = new Map();
+  rows.forEach(r => m.set(clean(r[0]), { barcode: clean(r[0]), ma: r[1], ten: r[2], gia: r[3] }));
+  st.catalog = m;
+  $('dmInfo').textContent = m.size + ' SP';
+}
+async function loadCatalog(force) {
+  const cached = lsGet('att_catalog');
+  if (cached && cached.rows && !force) setCatalog(cached.rows);
+  const fresh = !cached || force || (Date.now() - cached.t > 3 * 3600 * 1000);
+  if (!fresh) return;
+  try {
+    $('dmInfo').textContent = 'Đang tải danh mục…';
+    const j = await api('catalog');
+    setCatalog(j.rows);
+    lsSet('att_catalog', { t: Date.now(), rows: j.rows });
+  } catch (e) {
+    if (e.message.indexOf('PIN') >= 0) return logout();
+    $('dmInfo').textContent = st.catalog ? st.catalog.size + ' SP (bản cũ)' : 'Chưa tải được danh mục';
+  }
+}
+function reloadCatalog() { loadCatalog(true).then(() => toast('Đã tải lại danh mục')); }
+
+/* ---------- camera: quét liên tục, tự nhận mã ---------- */
+function formats() {
+  const F = Html5QrcodeSupportedFormats;
+  return [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.ITF, F.QR_CODE];
+}
+async function startCamera() {
+  try {
+    qr = new Html5Qrcode('reader', { formatsToSupport: formats(), verbose: false,
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
+    await qr.start({ facingMode: 'environment' },
+      { fps: 12, qrbox: (w, h) => ({ width: Math.floor(w * 0.85), height: Math.floor(Math.min(h * 0.5, w * 0.5)) }) },
+      onDetected);
+    camOk = true;
+    scanMsg('📷 Đưa mã vạch vào khung – app tự nhận');
+  } catch (e) {
+    camOk = false;
+    scanMsg('Không mở được camera trực tiếp.', 'err');
+    $('camFallback').classList.remove('hidden');
+  }
+}
+function grabFrame() {
+  const v = document.querySelector('#reader video');
+  if (!v || !v.videoWidth) return '';
+  return toJpeg(v, v.videoWidth, v.videoHeight);
+}
+function toJpeg(src, w, h) {
+  const max = 1024, k = Math.min(1, max / Math.max(w, h));
+  const c = document.createElement('canvas');
+  c.width = Math.round(w * k); c.height = Math.round(h * k);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.72);
+}
+function pauseCam() { try { if (camOk && qr) qr.pause(true); } catch (e) {} }
+function resumeCam() {
+  try { if (camOk && qr) qr.resume(); } catch (e) {}
+  if (camOk) scanMsg('📷 Đưa mã vạch vào khung – app tự nhận');
+}
+
+function onDetected(text) {
+  if (st.busy) return;
+  st.busy = true;
+  const photo = grabFrame();
+  pauseCam();
+  beep();
+  scanMsg('✔ Đã quét: ' + text, 'ok');
+  fillProduct(clean(text), photo);
+}
+
+/* ---------- chụp ảnh (dự phòng + chụp lại) ---------- */
+function fileToJpeg(file) {
+  return new Promise((ok, fail) => {
+    const img = new Image();
+    img.onload = () => { ok(toJpeg(img, img.naturalWidth, img.naturalHeight)); URL.revokeObjectURL(img.src); };
+    img.onerror = fail;
+    img.src = URL.createObjectURL(file);
+  });
+}
+async function scanPhotoFile(input) {
+  const file = input.files && input.files[0]; input.value = '';
+  if (!file) return;
+  scanMsg('Đang đọc ảnh…');
+  let photo = '';
+  try { photo = await fileToJpeg(file); } catch (e) {}
+  try {
+    const r = new Html5Qrcode('readerFile', { formatsToSupport: formats(), verbose: false });
+    const text = await r.scanFile(file, false);
+    st.busy = true; beep();
+    scanMsg('✔ Đã quét: ' + text, 'ok');
+    fillProduct(clean(text), photo);
+  } catch (e) {
+    scanMsg('Không đọc được mã vạch. Chụp gần, rõ nét, mã nằm ngang – hoặc gõ tay barcode.', 'err');
+    if (photo) setPhoto(photo);
+  }
+}
+async function retakePhoto(input) {
+  const file = input.files && input.files[0]; input.value = '';
+  if (!file) return;
+  try { setPhoto(await fileToJpeg(file)); } catch (e) { alert('Không đọc được ảnh.'); }
+}
+function setPhoto(dataUrl) {
+  st.photo = dataUrl || '';
+  const img = $('photoImg');
+  if (st.photo) img.src = st.photo; else img.removeAttribute('src');
+}
+
+/* ---------- tra cứu & điền form ---------- */
+async function lookupTyped() {
+  const code = clean($('barcode').value);
+  if (!code) return;
+  st.busy = true; pauseCam();
+  fillProduct(code, st.photo);
+}
+
+async function fillProduct(code, photo) {
+  $('barcode').value = code;
+  $('barcode').classList.remove('invalid');
+  if (photo) setPhoto(photo);
+
+  let item = st.catalog ? st.catalog.get(code) : undefined;
+  if (item === undefined && !st.catalog) {
+    status('ok', 'Đang tra barcode…');
+    try { item = (await api('lookup', { barcode: code })).item; } catch (e) { status('err', 'Lỗi tra cứu: ' + e.message); return; }
+  }
+  st.item = item || null;
+  st.found = !!item;
+
+  const ma = $('ma'), ten = $('ten'), sb = $('giaSB');
+  if (item) {
+    ma.value = item.ma; ma.classList.remove('noinfo');
+    ten.value = item.ten; ten.readOnly = true; ten.classList.add('ro'); ten.classList.remove('need'); ten.placeholder = '';
+    sb.value = item.gia ? fmt(item.gia) + ' đ' : ''; sb.classList.remove('noinfo');
+    status('ok', '✔ Có trong danh mục. Nhập giá bán đối thủ rồi bấm Lưu.');
+  } else {
+    ma.value = NOINFO; ma.classList.add('noinfo');
+    ten.value = ''; ten.readOnly = false; ten.classList.remove('ro'); ten.classList.add('need'); ten.placeholder = NOINFO + ' – nhập tên hàng';
+    sb.value = NOINFO; sb.classList.add('noinfo');
+    status('warn', '⚠ Không có thông tin barcode này. Bắt buộc nhập tay Tên hàng, Giá bán đối thủ và chọn Tên đối thủ.');
+  }
+  setTimeout(() => (item ? $('giaDT') : $('ten')).focus(), 150);
+}
+
+function resetForm() {
+  st.found = null; st.item = null; st.busy = false;
+  ['barcode', 'ma', 'ten', 'giaSB', 'giaDT', 'km'].forEach(id => { $(id).value = ''; $(id).classList.remove('invalid', 'noinfo', 'need'); });
+  $('ten').readOnly = false; $('ten').classList.remove('ro'); $('ten').placeholder = '';
+  $('status').className = 'status hidden';
+  setPhoto('');
+}
+function skip() { resetForm(); resumeCam(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+
+/* ---------- đối thủ ---------- */
+function onCompChange(silent) {
+  const sel = $('comp');
+  const other = sel.value === OTHER;
+  $('compOther').classList.toggle('hidden', !other);
+  sel.classList.remove('invalid');
+  if (other) { if (!silent) $('compOther').focus(); }
+  else if (sel.value) lsSet('att_comp', sel.value);
+}
+function getComp() { return $('comp').value === OTHER ? $('compOther').value.trim() : $('comp').value; }
+
+/* ---------- lưu ---------- */
+async function save() {
+  if (st.saving) return;
+  if ($('barcode').value.trim() && st.found === null) { await lookupTyped(); return; }
+
+  const d = {
+    name: st.profile.name,
+    competitor: getComp(),
+    barcode: clean($('barcode').value),
+    ten: $('ten').value.trim(),
+    giaDT: num($('giaDT').value),
+    km: num($('km').value),
+    photo: st.photo ? st.photo.split(',')[1] : ''
+  };
+  const errs = [];
+  if (!d.competitor) errs.push([$('comp').value === OTHER ? 'compOther' : 'comp', 'Chọn Tên đối thủ (nút vàng góc trên)']);
+  if (!d.barcode) errs.push(['barcode', 'Quét hoặc nhập Barcode']);
+  if (!d.ten) errs.push(['ten', 'Nhập Tên hàng']);
+  if (!d.giaDT) errs.push(['giaDT', 'Nhập Giá bán đối thủ']);
+  if (errs.length) {
+    errs.forEach(([id]) => $(id).classList.add('invalid'));
+    $(errs[0][0]).focus();
+    alert('Còn thiếu:\n- ' + errs.map(e => e[1]).join('\n- '));
+    return;
+  }
+  if (d.km && d.km >= d.giaDT && !confirm('Giá khuyến mãi đang lớn hơn hoặc bằng giá bán đối thủ. Vẫn lưu?')) return;
+
+  st.saving = true;
+  const btn = $('btnSave'); btn.disabled = true; btn.textContent = 'Đang lưu…';
+  try {
+    const r = await api('save', d);
+    lsSet('att_comp', d.competitor);
+    addRecent(d, r.stt);
+    toast('Đã lưu #' + r.stt + ': ' + d.ten);
+    resetForm();
+    resumeCam();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (e) {
+    if (e.message.indexOf('PIN') >= 0) { alert('Mã PIN đã thay đổi, vui lòng đăng nhập lại.'); return logout(); }
+    alert('Lỗi khi lưu: ' + e.message);
+  } finally {
+    st.saving = false; btn.disabled = false; btn.textContent = '💾 Lưu';
+  }
+}
+function addRecent(d, stt) {
+  const box = $('recent');
+  if (box.textContent === 'Chưa có.') box.textContent = '';
+  const div = document.createElement('div');
+  div.className = 'item';
+  const b = document.createElement('b'); b.textContent = '#' + stt + ' ' + d.ten;
+  const s = document.createElement('div'); s.className = 'muted';
+  s.textContent = d.competitor + ' · ' + d.barcode + ' · Giá ĐT ' + fmt(d.giaDT) + 'đ' + (d.km ? ' · KM ' + fmt(d.km) + 'đ' : '') + (d.photo ? ' · 📷' : '');
+  div.append(b, s);
+  box.prepend(div);
+}
+
+init();
+</script>
+</body>
+</html>
