@@ -81,12 +81,17 @@
     <!-- Camera quét liên tục -->
     <div class="card">
       <div id="reader"></div>
-      <div id="scanMsg" class="scanline">Đang mở camera…</div>
+      <div id="scanMsg" class="scanline">Bấm "Bật camera" để bắt đầu quét.</div>
+      <button id="btnCam" class="btn primary" style="display:block;width:100%;margin-top:8px;padding:14px;font-size:17px" onclick="startCamera()">▶ Bật camera</button>
       <div id="camFallback" class="hidden" style="margin-top:8px">
-        <label class="btn primary" style="display:block;margin:0">📸 Chụp ảnh mã vạch
+        <div class="muted" style="margin-bottom:8px">
+          <b>iPhone:</b> chạm <b>aA</b> trên thanh địa chỉ Safari → <b>Cài đặt trang web</b> → <b>Camera</b> → <b>Cho phép</b>, rồi bấm "Bật camera".<br>
+          <b>Android:</b> chạm biểu tượng ổ khóa/⚙ cạnh địa chỉ → <b>Quyền</b> → <b>Camera</b> → <b>Cho phép</b>.<br>
+          Mở link bằng Safari/Chrome, không mở trong Zalo/Gapo.
+        </div>
+        <label class="btn" style="display:block;margin:0">📸 Hoặc chụp ảnh mã vạch
           <input type="file" accept="image/*" capture="environment" hidden onchange="scanPhotoFile(this)">
         </label>
-        <div class="muted" style="margin-top:6px">Nếu camera không mở: hãy mở link bằng <b>Chrome</b> (Android) hoặc <b>Safari</b> (iPhone), không mở trong Zalo/Gapo, và cho phép dùng camera.</div>
       </div>
     </div>
 
@@ -269,18 +274,39 @@ function formats() {
   const F = Html5QrcodeSupportedFormats;
   return [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.ITF, F.QR_CODE];
 }
+function qrboxSize(w, h) {
+  const bw = Math.max(120, Math.floor(w * 0.85));
+  const bh = Math.max(80, Math.floor(Math.min(h * 0.5, w * 0.45)));
+  return { width: Math.min(bw, Math.max(w, 120)), height: Math.min(bh, Math.max(h, 80)) };
+}
+function camErrorText(e) {
+  const n = (e && (e.name || '')) + ' ' + String(e && e.message || e || '');
+  if (typeof Html5Qrcode === 'undefined') return 'Không tải được bộ quét mã. Kiểm tra mạng rồi tải lại trang.';
+  if (/NotAllowed|Permission|denied/i.test(n)) return 'Camera đang bị chặn. Cho phép camera cho trang này (xem hướng dẫn bên dưới) rồi bấm "Bật camera".';
+  if (/NotFound|Overconstrained|no camera/i.test(n)) return 'Không tìm thấy camera sau của máy.';
+  if (/NotReadable|in use|Could not start/i.test(n)) return 'Camera đang được app khác dùng. Đóng app camera/khác rồi bấm "Bật camera".';
+  if (/secure|https/i.test(n)) return 'Trang phải mở bằng link https.';
+  return 'Chưa mở được camera (' + n.trim().slice(0, 120) + ').';
+}
 async function startCamera() {
+  $('btnCam').classList.add('hidden');
+  scanMsg('Đang mở camera…');
   try {
+    if (typeof Html5Qrcode === 'undefined') throw new Error('lib');
+    if (qr) { try { if (qr.isScanning) await qr.stop(); qr.clear(); } catch (e) {} }
     qr = new Html5Qrcode('reader', { formatsToSupport: formats(), verbose: false,
       experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
     await qr.start({ facingMode: 'environment' },
-      { fps: 12, qrbox: (w, h) => ({ width: Math.floor(w * 0.85), height: Math.floor(Math.min(h * 0.5, w * 0.5)) }) },
+      { fps: 12, qrbox: qrboxSize,
+        videoConstraints: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
       onDetected);
     camOk = true;
+    $('camFallback').classList.add('hidden');
     scanMsg('📷 Đưa mã vạch vào khung – app tự nhận');
   } catch (e) {
     camOk = false;
-    scanMsg('Không mở được camera trực tiếp.', 'err');
+    scanMsg(camErrorText(e), 'err');
+    $('btnCam').classList.remove('hidden');
     $('camFallback').classList.remove('hidden');
   }
 }
