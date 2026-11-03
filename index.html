@@ -22,6 +22,8 @@
   .cam video{width:100%;height:100%;object-fit:cover;display:block}
   .guide{position:absolute;left:8%;right:8%;top:30%;bottom:30%;border:3px solid rgba(255,193,7,.95);border-radius:8px;box-shadow:0 0 0 999px rgba(0,0,0,.25);pointer-events:none}
   .guide.hit{border-color:#2ecc71}
+  .tools{display:flex;gap:8px;margin-top:8px}
+  .tools .btn{flex:1}
   .scanline{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:#eef3fa;color:var(--brand)}
   .scanline.ok{background:var(--ok-bg);color:var(--ok);font-weight:600}
   .scanline.err{background:var(--bad-bg);color:var(--bad)}
@@ -88,8 +90,13 @@
         <div class="guide"></div>
       </div>
       <div id="scanMsg" class="scanline">Bấm "Bật camera" để bắt đầu quét.</div>
-      <button id="btnCam" class="btn primary" style="display:block;width:100%;margin-top:8px;padding:14px;font-size:17px" onclick="startCamera()">▶ Bật camera</button>
+      <button id="btnCam" class="btn primary" style="display:block;width:100%;margin-top:8px;padding:14px;font-size:17px" onclick="startCamera(null)">▶ Bật camera</button>
       <button id="btnShot" class="btn primary hidden" style="display:block;width:100%;margin-top:8px;padding:14px;font-size:17px" onclick="manualShot()">📸 Chụp &amp; quét</button>
+      <div id="camTools" class="tools hidden">
+        <button id="btnSwitch" class="btn small" onclick="switchCamera()">🔄 Đổi camera</button>
+        <button id="btnZoom" class="btn small hidden" onclick="cycleZoom()">🔍 1x</button>
+        <button id="btnTorch" class="btn small hidden" onclick="toggleTorch()">💡 Đèn</button>
+      </div>
       <div id="camFallback" class="hidden" style="margin-top:8px">
         <div class="muted" style="margin-bottom:8px">
           <b>iPhone:</b> chạm <b>aA</b> trên thanh địa chỉ Safari → <b>Cài đặt trang web</b> → <b>Camera</b> → <b>Cho phép</b>, rồi bấm "Bật camera".<br>
@@ -104,7 +111,7 @@
 
     <!-- Form -->
     <div class="card">
-      <label>Barcode <span class="req">*</span></label>
+      <label>Barcode</label>
       <div class="row">
         <input id="barcode" inputmode="numeric" placeholder="Đưa mã vào camera hoặc gõ tay" autocomplete="off">
         <button class="btn small" onclick="lookupTyped()">Tra</button>
@@ -117,8 +124,6 @@
       <label>Tên hàng <span class="req">*</span></label>
       <input id="ten" autocomplete="off">
 
-      <label>Giá bán lẻ SB</label>
-      <input id="giaSB" readonly class="ro">
 
       <label>Giá bán đối thủ <span class="req">*</span></label>
       <input id="giaDT" inputmode="numeric" autocomplete="off" placeholder="Nhập giá đối thủ đang bán">
@@ -306,33 +311,122 @@ function camErrorText(e) {
   return 'Chưa mở được camera (' + n.trim().slice(0, 120) + ').';
 }
 
-async function startCamera() {
+/* ----- chọn camera sau chính (Android hay tự chọn nhầm camera góc rộng không lấy nét được) ----- */
+let backCams = [], camIdx = -1, zoomSteps = [], zoomIdx = 0, torchOn = false;
+const isAndroid = /Android/i.test(navigator.userAgent);
+
+async function openStream(deviceId) {
+  const hi = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+  const tries = deviceId
+    ? [{ deviceId: { exact: deviceId }, ...hi }, { deviceId: { exact: deviceId } }]
+    : [{ facingMode: { ideal: 'environment' }, ...hi }, { facingMode: 'environment' }];
+  let lastErr;
+  for (const video of tries) {
+    try { return await navigator.mediaDevices.getUserMedia({ audio: false, video }); }
+    catch (e) { lastErr = e; if (/NotAllowed|Permission/i.test(e && e.name)) throw e; }
+  }
+  throw lastErr;
+}
+async function listBackCams() {
+  try {
+    const all = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    const back = all.filter(d => /back|rear|sau|environment/i.test(d.label));
+    return back.length ? back : all;
+  } catch (e) { return []; }
+}
+/* Android: "camera2 0, facing back" thường là camera chính có lấy nét tự động */
+function pickMainBack(list) {
+  const scored = list.map(d => {
+    const m = d.label.match(/camera2?\s*(\d+)/i);
+    let score = m ? Number(m[1]) : 50;
+    if (/wide|rộng|ultra|tele|macro|depth/i.test(d.label)) score += 100;
+    return { d, score };
+  }).sort((a, b) => a.score - b.score);
+  return scored.length ? scored[0].d : null;
+}
+async function tuneTrack(track) {
+  let caps = {};
+  try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
+  const adv = {};
+  if (caps.focusMode && caps.focusMode.includes('continuous')) adv.focusMode = 'continuous';
+  if (caps.exposureMode && caps.exposureMode.includes('continuous')) adv.exposureMode = 'continuous';
+  if (Object.keys(adv).length) { try { await track.applyConstraints({ advanced: [adv] }); } catch (e) {} }
+  // Zoom: phóng nhẹ để cầm máy xa hơn một chút -> lấy nét rõ hơn
+  zoomSteps = [];
+  if (caps.zoom && caps.zoom.max > 1) {
+    zoomSteps = [1, 1.5, 2, 3].filter(z => z >= (caps.zoom.min || 1) && z <= caps.zoom.max);
+    const saved = lsGet('att_zoom');
+    zoomIdx = Math.max(0, zoomSteps.indexOf(saved != null ? saved : (zoomSteps.includes(1.5) ? 1.5 : 1)));
+    await applyZoom(track);
+  }
+  $('btnZoom').classList.toggle('hidden', zoomSteps.length < 2);
+  torchOn = false;
+  $('btnTorch').classList.toggle('hidden', !caps.torch);
+  $('btnTorch').textContent = '💡 Đèn';
+}
+async function applyZoom(track) {
+  const z = zoomSteps[zoomIdx] || 1;
+  try { await track.applyConstraints({ advanced: [{ zoom: z }] }); } catch (e) {}
+  $('btnZoom').textContent = '🔍 ' + z + 'x';
+}
+async function cycleZoom() {
+  if (!stream || zoomSteps.length < 2) return;
+  zoomIdx = (zoomIdx + 1) % zoomSteps.length;
+  lsSet('att_zoom', zoomSteps[zoomIdx]);
+  await applyZoom(stream.getVideoTracks()[0]);
+}
+async function toggleTorch() {
+  if (!stream) return;
+  torchOn = !torchOn;
+  try { await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: torchOn }] }); } catch (e) { torchOn = false; }
+  $('btnTorch').textContent = torchOn ? '💡 Tắt đèn' : '💡 Đèn';
+}
+async function switchCamera() {
+  if (backCams.length < 2) { scanMsg('Máy chỉ có 1 camera sau.', ''); return; }
+  camIdx = (camIdx + 1) % backCams.length;
+  lsSet('att_cam', backCams[camIdx].deviceId);
+  await startCamera(backCams[camIdx].deviceId);
+  scanMsg('📷 Camera ' + (camIdx + 1) + '/' + backCams.length + ' – nếu vẫn mờ, bấm "Đổi camera" tiếp');
+}
+
+async function startCamera(forceId) {
   $('btnCam').classList.add('hidden');
   scanMsg('Đang mở camera…');
   stopCamera();
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('nomedia');
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
-    } catch (e) {
-      if (/NotAllowed|Permission/i.test(e && e.name)) throw e;
-      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'environment' } });
+    const savedId = typeof forceId === 'string' ? forceId : lsGet('att_cam');
+    try { stream = await openStream(savedId || null); }
+    catch (e) { if (!savedId || /NotAllowed|Permission/i.test(e && e.name)) throw e; stream = await openStream(null); }
+
+    // Sau khi có quyền mới đọc được tên camera -> chọn đúng camera chính trên Android
+    backCams = await listBackCams();
+    const curId = stream.getVideoTracks()[0].getSettings().deviceId;
+    if (isAndroid && !savedId && backCams.length > 1) {
+      const main = pickMainBack(backCams);
+      if (main && main.deviceId && main.deviceId !== curId) {
+        try { const s2 = await (stream.getTracks().forEach(t => t.stop()), openStream(main.deviceId)); stream = s2; }
+        catch (e) { stream = await openStream(null); }
+      }
     }
+    const nowId = stream.getVideoTracks()[0].getSettings().deviceId;
+    camIdx = Math.max(0, backCams.findIndex(d => d.deviceId === nowId));
+
     const v = $('video');
     v.srcObject = stream;
     v.muted = true;
     try { await v.play(); } catch (e) {}
-    const track = stream.getVideoTracks()[0];
-    try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+    await tuneTrack(stream.getVideoTracks()[0]);
 
     camOk = true;
     $('camFallback').classList.add('hidden');
     $('btnShot').classList.remove('hidden');
+    $('camTools').classList.remove('hidden');
+    $('btnSwitch').classList.toggle('hidden', backCams.length < 2);
     scanMsg('Đang chuẩn bị bộ đọc mã…');
     await getDetector();
     scanMsg('📷 Đưa mã vạch vào khung vàng – app tự nhận');
-    scanning = true;
+    scanning = !st.busy;
     tick();
     setTimeout(checkVideo, 2500);
   } catch (e) {
@@ -340,6 +434,7 @@ async function startCamera() {
     scanMsg(camErrorText(e), 'err');
     $('btnCam').classList.remove('hidden');
     $('btnShot').classList.add('hidden');
+    $('camTools').classList.add('hidden');
     $('camFallback').classList.remove('hidden');
   }
 }
@@ -380,7 +475,7 @@ async function tick() {
 
 /* Nút "Chụp & quét": đọc cả khung hình to, rõ hơn */
 async function manualShot() {
-  if (!camOk) return startCamera();
+  if (!camOk) return startCamera(null);
   if (st.busy) skip();
   scanMsg('Đang đọc mã…');
   try { await getDetector(); } catch (e) { scanMsg(camErrorText(e), 'err'); return; }
@@ -519,24 +614,22 @@ async function fillProduct(code, photo) {
   st.item = item || null;
   st.found = !!item;
 
-  const ma = $('ma'), ten = $('ten'), sb = $('giaSB');
+  const ma = $('ma'), ten = $('ten');
   if (item) {
     ma.value = item.ma; ma.classList.remove('noinfo');
     ten.value = item.ten; ten.readOnly = true; ten.classList.add('ro'); ten.classList.remove('need'); ten.placeholder = '';
-    sb.value = item.gia ? fmt(item.gia) + ' đ' : ''; sb.classList.remove('noinfo');
     status('ok', '✔ Có trong danh mục. Nhập giá bán đối thủ rồi bấm Lưu.');
   } else {
     ma.value = NOINFO; ma.classList.add('noinfo');
     ten.value = ''; ten.readOnly = false; ten.classList.remove('ro'); ten.classList.add('need'); ten.placeholder = NOINFO + ' – nhập tên hàng';
-    sb.value = NOINFO; sb.classList.add('noinfo');
-    status('warn', '⚠ Không có thông tin barcode này. Bắt buộc nhập tay Tên hàng, Giá bán đối thủ và chọn Tên đối thủ.');
+    status('warn', '⚠ Không có thông tin barcode này. Bắt buộc nhập tay Tên hàng và Giá bán đối thủ.');
   }
   setTimeout(() => (item ? $('giaDT') : $('ten')).focus(), 150);
 }
 
 function resetForm() {
   st.found = null; st.item = null; st.busy = false;
-  ['barcode', 'ma', 'ten', 'giaSB', 'giaDT', 'km'].forEach(id => { $(id).value = ''; $(id).classList.remove('invalid', 'noinfo', 'need'); });
+  ['barcode', 'ma', 'ten', 'giaDT', 'km'].forEach(id => { $(id).value = ''; $(id).classList.remove('invalid', 'noinfo', 'need'); });
   $('ten').readOnly = false; $('ten').classList.remove('ro'); $('ten').placeholder = '';
   $('status').className = 'status hidden';
   setPhoto('');
@@ -570,7 +663,6 @@ async function save() {
   };
   const errs = [];
   if (!d.competitor) errs.push([$('comp').value === OTHER ? 'compOther' : 'comp', 'Chọn Tên đối thủ (nút vàng góc trên)']);
-  if (!d.barcode) errs.push(['barcode', 'Quét hoặc nhập Barcode']);
   if (!d.ten) errs.push(['ten', 'Nhập Tên hàng']);
   if (!d.giaDT) errs.push(['giaDT', 'Nhập Giá bán đối thủ']);
   if (errs.length) {
