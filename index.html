@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>App thị trường</title>
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/barcode-detector@3.0.1/dist/iife/ponyfill.min.js"></script>
 <style>
   /* ====== DÁN LINK APPS SCRIPT Ở PHẦN <script> BÊN DƯỚI (API_URL) ====== */
   :root{--brand:#1f4e79;--yellow:#ffc107;--line:#dde3ec;--muted:#6b7385;--ok:#1e8e4e;--ok-bg:#e6f5ec;--warn:#b26a00;--warn-bg:#fff4e0;--bad:#c0392b;--bad-bg:#fbeaea}
@@ -18,8 +18,10 @@
   .comp input{margin:0;border:2px solid var(--yellow)}
   main{max-width:560px;margin:0 auto;padding:12px 12px 60px}
   .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
-  #reader{width:100%;background:#000;border-radius:10px;overflow:hidden;min-height:180px}
-  #reader video{object-fit:cover}
+  .cam{position:relative;width:100%;aspect-ratio:4/3;background:#000;border-radius:10px;overflow:hidden}
+  .cam video{width:100%;height:100%;object-fit:cover;display:block}
+  .guide{position:absolute;left:8%;right:8%;top:30%;bottom:30%;border:3px solid rgba(255,193,7,.95);border-radius:8px;box-shadow:0 0 0 999px rgba(0,0,0,.25);pointer-events:none}
+  .guide.hit{border-color:#2ecc71}
   .scanline{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:#eef3fa;color:var(--brand)}
   .scanline.ok{background:var(--ok-bg);color:var(--ok);font-weight:600}
   .scanline.err{background:var(--bad-bg);color:var(--bad)}
@@ -66,6 +68,7 @@
 </header>
 
 <main>
+  <div id="inAppMsg" class="status warn hidden" style="margin:0 0 12px"></div>
   <!-- Đăng nhập lần đầu -->
   <div id="setupView" class="card hidden">
     <h3>Bắt đầu</h3>
@@ -80,9 +83,13 @@
   <div id="appView" class="hidden">
     <!-- Camera quét liên tục -->
     <div class="card">
-      <div id="reader"></div>
+      <div class="cam">
+        <video id="video" playsinline webkit-playsinline muted autoplay></video>
+        <div class="guide"></div>
+      </div>
       <div id="scanMsg" class="scanline">Bấm "Bật camera" để bắt đầu quét.</div>
       <button id="btnCam" class="btn primary" style="display:block;width:100%;margin-top:8px;padding:14px;font-size:17px" onclick="startCamera()">▶ Bật camera</button>
+      <button id="btnShot" class="btn primary hidden" style="display:block;width:100%;margin-top:8px;padding:14px;font-size:17px" onclick="manualShot()">📸 Chụp &amp; quét</button>
       <div id="camFallback" class="hidden" style="margin-top:8px">
         <div class="muted" style="margin-bottom:8px">
           <b>iPhone:</b> chạm <b>aA</b> trên thanh địa chỉ Safari → <b>Cài đặt trang web</b> → <b>Camera</b> → <b>Cho phép</b>, rồi bấm "Bật camera".<br>
@@ -153,7 +160,7 @@
 /* =========================================================
    DÁN LINK WEB APP APPS SCRIPT (kết thúc bằng /exec) VÀO ĐÂY
    ========================================================= */
-const API_URL = 'https://script.google.com/macros/s/AKfycbzdNPrbltfmij35-Pq7cZy-sb6bZn_sv2ws_yZeYzrMO4mjBuU9eLehnHM6AS9W3luWyg/exec';
+const API_URL = 'DAN_LINK_APPS_SCRIPT_VAO_DAY';
 
 const COMPETITORS = ['Winmart', 'BHX', 'Bác Tôm', 'Fuji', 'Aone'];
 const OTHER = '__other__';
@@ -192,6 +199,7 @@ function beep() {
 
 /* ---------- khởi động ---------- */
 function init() {
+  showInAppWarning();
   const sel = $('comp');
   COMPETITORS.forEach(c => sel.add(new Option(c, c)));
   sel.add(new Option('Đối thủ khác…', OTHER));
@@ -296,19 +304,53 @@ async function startCamera() {
     if (qr) { try { if (qr.isScanning) await qr.stop(); qr.clear(); } catch (e) {} }
     qr = new Html5Qrcode('reader', { formatsToSupport: formats(), verbose: false,
       experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
-    await qr.start({ facingMode: 'environment' },
-      { fps: 12, qrbox: qrboxSize,
-        videoConstraints: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
-      onDetected);
+    await qr.start({ facingMode: 'environment' }, { fps: 12, qrbox: qrboxSize }, onDetected);
     camOk = true;
     $('camFallback').classList.add('hidden');
     scanMsg('📷 Đưa mã vạch vào khung – app tự nhận');
+    const v = document.querySelector('#reader video');
+    if (v) {
+      v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
+      v.muted = true; v.autoplay = true;
+      try { await v.play(); } catch (e) {}
+    }
+    setTimeout(checkVideo, 2500);
   } catch (e) {
     camOk = false;
     scanMsg(camErrorText(e), 'err');
     $('btnCam').classList.remove('hidden');
     $('camFallback').classList.remove('hidden');
   }
+}
+/* Camera bật nhưng không ra hình (hay gặp khi mở link trong Zalo/Gapo/Messenger) */
+function checkVideo() {
+  if (!camOk) return;
+  const v = document.querySelector('#reader video');
+  const t0 = v ? v.currentTime : 0;
+  setTimeout(() => {
+    const dead = !v || v.videoWidth === 0 || v.readyState < 2 || v.currentTime === t0;
+    if (!dead) return;
+    scanMsg('Camera đã bật nhưng không hiện hình. ' +
+      (inAppBrowser() ? 'Bạn đang mở link trong app khác – hãy mở bằng Safari/Chrome (xem hướng dẫn trên cùng).'
+                      : 'Hãy tải lại trang rồi bấm "Bật camera".'), 'err');
+    $('btnCam').classList.remove('hidden');
+    $('camFallback').classList.remove('hidden');
+  }, 1200);
+}
+function inAppBrowser() {
+  const ua = navigator.userAgent || '';
+  if (/Zalo|FBAN|FBAV|FB_IAB|Instagram|Line\/|Gapo|MicroMessenger|TikTok|Telegram/i.test(ua)) return true;
+  const iOS = /iPhone|iPad|iPod/i.test(ua);
+  if (iOS && !navigator.standalone && !/Safari\//.test(ua)) return true;   // WebView trong app
+  if (/Android/i.test(ua) && /; wv\)/.test(ua)) return true;
+  return false;
+}
+function showInAppWarning() {
+  if (!inAppBrowser()) return;
+  const iOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  $('inAppMsg').innerHTML = '⚠ Bạn đang mở link <b>bên trong một app</b> (Zalo/Gapo/Messenger…) nên camera có thể không hiện hình.<br>' +
+    'Hãy chạm <b>···</b> ở góc trên → chọn <b>' + (iOS ? 'Mở bằng Safari / Mở trong trình duyệt' : 'Mở bằng Chrome / Mở trong trình duyệt') + '</b>.';
+  $('inAppMsg').classList.remove('hidden');
 }
 function grabFrame() {
   const v = document.querySelector('#reader video');
