@@ -153,21 +153,20 @@
   </div>
 </main>
 
-<div id="readerFile" style="display:none"></div>
 <div id="toast" class="toast hidden"></div>
 
 <script>
 /* =========================================================
    DÁN LINK WEB APP APPS SCRIPT (kết thúc bằng /exec) VÀO ĐÂY
    ========================================================= */
-const API_URL = 'DAN_LINK_APPS_SCRIPT_VAO_DAY';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzdNPrbltfmij35-Pq7cZy-sb6bZn_sv2ws_yZeYzrMO4mjBuU9eLehnHM6AS9W3luWyg/exec';
 
 const COMPETITORS = ['Winmart', 'BHX', 'Bác Tôm', 'Fuji', 'Aone'];
 const OTHER = '__other__';
 const NOINFO = 'Không có thông tin';
 
 const st = { profile: null, catalog: null, found: null, item: null, photo: '', busy: false, saving: false };
-let qr = null, camOk = false;
+let camOk = false;
 
 /* ---------- tiện ích ---------- */
 const $ = id => document.getElementById(id);
@@ -278,57 +277,125 @@ async function loadCatalog(force) {
 function reloadCatalog() { loadCatalog(true).then(() => toast('Đã tải lại danh mục')); }
 
 /* ---------- camera: quét liên tục, tự nhận mã ---------- */
-function formats() {
-  const F = Html5QrcodeSupportedFormats;
-  return [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.ITF, F.QR_CODE];
+const FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'qr_code'];
+let stream = null, detector = null, scanning = false, loopTimer = null, detecting = false;
+const work = document.createElement('canvas');
+
+/* Bộ đọc mã: dùng sẵn của máy (Android Chrome) nếu có, không thì dùng thư viện ZXing */
+async function getDetector() {
+  if (detector) return detector;
+  if ('BarcodeDetector' in window) {
+    try {
+      const sup = await window.BarcodeDetector.getSupportedFormats();
+      if (sup.includes('ean_13')) { detector = new window.BarcodeDetector({ formats: FORMATS.filter(f => sup.includes(f)) }); return detector; }
+    } catch (e) {}
+  }
+  const P = window.BarcodeDetectionAPI && window.BarcodeDetectionAPI.BarcodeDetector;
+  if (!P) throw new Error('lib');
+  detector = new P({ formats: FORMATS });
+  return detector;
 }
-function qrboxSize(w, h) {
-  const bw = Math.max(120, Math.floor(w * 0.85));
-  const bh = Math.max(80, Math.floor(Math.min(h * 0.5, w * 0.45)));
-  return { width: Math.min(bw, Math.max(w, 120)), height: Math.min(bh, Math.max(h, 80)) };
-}
+
 function camErrorText(e) {
   const n = (e && (e.name || '')) + ' ' + String(e && e.message || e || '');
-  if (typeof Html5Qrcode === 'undefined') return 'Không tải được bộ quét mã. Kiểm tra mạng rồi tải lại trang.';
+  if (e && e.message === 'lib') return 'Không tải được bộ đọc mã vạch. Kiểm tra mạng rồi tải lại trang.';
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return 'Trình duyệt này không hỗ trợ camera. Hãy mở bằng Safari (iPhone) hoặc Chrome (Android).';
   if (/NotAllowed|Permission|denied/i.test(n)) return 'Camera đang bị chặn. Cho phép camera cho trang này (xem hướng dẫn bên dưới) rồi bấm "Bật camera".';
-  if (/NotFound|Overconstrained|no camera/i.test(n)) return 'Không tìm thấy camera sau của máy.';
+  if (/NotFound|no camera/i.test(n)) return 'Không tìm thấy camera sau của máy.';
   if (/NotReadable|in use|Could not start/i.test(n)) return 'Camera đang được app khác dùng. Đóng app camera/khác rồi bấm "Bật camera".';
-  if (/secure|https/i.test(n)) return 'Trang phải mở bằng link https.';
   return 'Chưa mở được camera (' + n.trim().slice(0, 120) + ').';
 }
+
 async function startCamera() {
   $('btnCam').classList.add('hidden');
   scanMsg('Đang mở camera…');
+  stopCamera();
   try {
-    if (typeof Html5Qrcode === 'undefined') throw new Error('lib');
-    if (qr) { try { if (qr.isScanning) await qr.stop(); qr.clear(); } catch (e) {} }
-    qr = new Html5Qrcode('reader', { formatsToSupport: formats(), verbose: false,
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
-    await qr.start({ facingMode: 'environment' }, { fps: 12, qrbox: qrboxSize }, onDetected);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('nomedia');
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    } catch (e) {
+      if (/NotAllowed|Permission/i.test(e && e.name)) throw e;
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'environment' } });
+    }
+    const v = $('video');
+    v.srcObject = stream;
+    v.muted = true;
+    try { await v.play(); } catch (e) {}
+    const track = stream.getVideoTracks()[0];
+    try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+
     camOk = true;
     $('camFallback').classList.add('hidden');
-    scanMsg('📷 Đưa mã vạch vào khung – app tự nhận');
-    const v = document.querySelector('#reader video');
-    if (v) {
-      v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
-      v.muted = true; v.autoplay = true;
-      try { await v.play(); } catch (e) {}
-    }
+    $('btnShot').classList.remove('hidden');
+    scanMsg('Đang chuẩn bị bộ đọc mã…');
+    await getDetector();
+    scanMsg('📷 Đưa mã vạch vào khung vàng – app tự nhận');
+    scanning = true;
+    tick();
     setTimeout(checkVideo, 2500);
   } catch (e) {
     camOk = false;
     scanMsg(camErrorText(e), 'err');
     $('btnCam').classList.remove('hidden');
+    $('btnShot').classList.add('hidden');
     $('camFallback').classList.remove('hidden');
   }
 }
+function stopCamera() {
+  scanning = false;
+  clearTimeout(loopTimer);
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+}
+
+/* Đọc mã trên 1 khung hình. crop=true: chỉ vùng giữa (khung vàng) cho nhanh và chính xác */
+async function detectFrame(crop) {
+  const v = $('video');
+  if (!v.videoWidth || !detector) return '';
+  const vw = v.videoWidth, vh = v.videoHeight;
+  let sx = 0, sy = 0, sw = vw, sh = vh;
+  if (crop) { sx = vw * 0.05; sw = vw * 0.9; sy = vh * 0.22; sh = vh * 0.56; }
+  const k = Math.min(1, 1280 / sw);
+  work.width = Math.round(sw * k); work.height = Math.round(sh * k);
+  work.getContext('2d').drawImage(v, sx, sy, sw, sh, 0, 0, work.width, work.height);
+  try {
+    const res = await detector.detect(work);
+    const hit = res && res.find(r => r.rawValue);
+    return hit ? String(hit.rawValue).trim() : '';
+  } catch (e) { return ''; }
+}
+
+async function tick() {
+  clearTimeout(loopTimer);
+  if (!scanning) return;
+  if (!st.busy && !detecting) {
+    detecting = true;
+    const code = await detectFrame(true);
+    detecting = false;
+    if (code && scanning && !st.busy) { onDetected(code); if (st.busy) return; }
+  }
+  loopTimer = setTimeout(tick, 120);
+}
+
+/* Nút "Chụp & quét": đọc cả khung hình to, rõ hơn */
+async function manualShot() {
+  if (!camOk) return startCamera();
+  if (st.busy) skip();
+  scanMsg('Đang đọc mã…');
+  try { await getDetector(); } catch (e) { scanMsg(camErrorText(e), 'err'); return; }
+  const code = (await detectFrame(false)) || (await detectFrame(true));
+  if (code) { st.ignore = null; onDetected(code); }
+  else scanMsg('Chưa đọc được mã. Đưa mã vạch vào giữa khung vàng, cách 10–20 cm, đủ sáng, giữ yên rồi bấm lại.', 'err');
+}
+
 /* Camera bật nhưng không ra hình (hay gặp khi mở link trong Zalo/Gapo/Messenger) */
 function checkVideo() {
   if (!camOk) return;
-  const v = document.querySelector('#reader video');
-  const t0 = v ? v.currentTime : 0;
+  const v = $('video');
+  const t0 = v.currentTime;
   setTimeout(() => {
-    const dead = !v || v.videoWidth === 0 || v.readyState < 2 || v.currentTime === t0;
+    const dead = v.videoWidth === 0 || v.readyState < 2 || v.currentTime === t0;
     if (!dead) return;
     scanMsg('Camera đã bật nhưng không hiện hình. ' +
       (inAppBrowser() ? 'Bạn đang mở link trong app khác – hãy mở bằng Safari/Chrome (xem hướng dẫn trên cùng).'
@@ -353,8 +420,8 @@ function showInAppWarning() {
   $('inAppMsg').classList.remove('hidden');
 }
 function grabFrame() {
-  const v = document.querySelector('#reader video');
-  if (!v || !v.videoWidth) return '';
+  const v = $('video');
+  if (!v.videoWidth) return '';
   return toJpeg(v, v.videoWidth, v.videoHeight);
 }
 function toJpeg(src, w, h) {
@@ -364,43 +431,57 @@ function toJpeg(src, w, h) {
   c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
   return c.toDataURL('image/jpeg', 0.72);
 }
-function pauseCam() { try { if (camOk && qr) qr.pause(true); } catch (e) {} }
+function pauseCam() { scanning = false; clearTimeout(loopTimer); }
 function resumeCam() {
-  try { if (camOk && qr) qr.resume(); } catch (e) {}
-  if (camOk) scanMsg('📷 Đưa mã vạch vào khung – app tự nhận');
+  document.querySelector('.guide').classList.remove('hit');
+  if (camOk) { scanMsg('📷 Đưa mã vạch vào khung vàng – app tự nhận'); scanning = true; tick(); }
 }
 
 function onDetected(text) {
   if (st.busy) return;
+  const code = clean(text);
+  if (st.ignore && st.ignore.code === code && Date.now() < st.ignore.until) return;   // tránh quét lại SP vừa lưu
   st.busy = true;
   const photo = grabFrame();
   pauseCam();
+  document.querySelector('.guide').classList.add('hit');
   beep();
-  scanMsg('✔ Đã quét: ' + text, 'ok');
-  fillProduct(clean(text), photo);
+  scanMsg('✔ Đã quét: ' + code, 'ok');
+  fillProduct(code, photo);
 }
 
 /* ---------- chụp ảnh (dự phòng + chụp lại) ---------- */
-function fileToJpeg(file) {
+function loadImg(file) {
   return new Promise((ok, fail) => {
     const img = new Image();
-    img.onload = () => { ok(toJpeg(img, img.naturalWidth, img.naturalHeight)); URL.revokeObjectURL(img.src); };
+    img.onload = () => ok(img);
     img.onerror = fail;
     img.src = URL.createObjectURL(file);
   });
+}
+async function fileToJpeg(file) {
+  const img = await loadImg(file);
+  const out = toJpeg(img, img.naturalWidth, img.naturalHeight);
+  URL.revokeObjectURL(img.src);
+  return out;
 }
 async function scanPhotoFile(input) {
   const file = input.files && input.files[0]; input.value = '';
   if (!file) return;
   scanMsg('Đang đọc ảnh…');
-  let photo = '';
-  try { photo = await fileToJpeg(file); } catch (e) {}
+  let img = null, photo = '';
+  try { img = await loadImg(file); photo = toJpeg(img, img.naturalWidth, img.naturalHeight); } catch (e) {}
   try {
-    const r = new Html5Qrcode('readerFile', { formatsToSupport: formats(), verbose: false });
-    const text = await r.scanFile(file, false);
-    st.busy = true; beep();
-    scanMsg('✔ Đã quét: ' + text, 'ok');
-    fillProduct(clean(text), photo);
+    const det = await getDetector();
+    const k = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight));
+    work.width = Math.round(img.naturalWidth * k); work.height = Math.round(img.naturalHeight * k);
+    work.getContext('2d').drawImage(img, 0, 0, work.width, work.height);
+    const res = await det.detect(work);
+    const hit = res && res.find(r => r.rawValue);
+    if (!hit) throw new Error('none');
+    st.busy = true; pauseCam(); beep();
+    scanMsg('✔ Đã quét: ' + hit.rawValue, 'ok');
+    fillProduct(clean(hit.rawValue), photo);
   } catch (e) {
     scanMsg('Không đọc được mã vạch. Chụp gần, rõ nét, mã nằm ngang – hoặc gõ tay barcode.', 'err');
     if (photo) setPhoto(photo);
@@ -460,7 +541,7 @@ function resetForm() {
   $('status').className = 'status hidden';
   setPhoto('');
 }
-function skip() { resetForm(); resumeCam(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+function skip() { const c = clean($('barcode').value); if (c) st.ignore = { code: c, until: Date.now() + 3000 }; resetForm(); resumeCam(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
 
 /* ---------- đối thủ ---------- */
 function onCompChange(silent) {
@@ -507,6 +588,7 @@ async function save() {
     lsSet('att_comp', d.competitor);
     addRecent(d, r.stt);
     toast('Đã lưu #' + r.stt + ': ' + d.ten);
+    st.ignore = { code: d.barcode, until: Date.now() + 5000 };
     resetForm();
     resumeCam();
     window.scrollTo({ top: 0, behavior: 'smooth' });
